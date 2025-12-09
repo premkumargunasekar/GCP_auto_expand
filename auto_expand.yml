@@ -4,21 +4,49 @@
   gather_facts: no
 
   vars:
-    threshold: 80
-    auto_base_prefix: 16
-    suffix_pattern: '-\\d{3}-snt$'
-    number_segment_len: 3
+    threshold: 80                   # Utilization percentage trigger
+    auto_base_prefix: 16            # Infer parent supernet as /16 from 1st two octets
+    suffix_pattern: '-\\d{3}-snt$'  # Naming format: Region-env-sol-region-001-snt
+    number_segment_len: 3           # 001 / 002 / 003 format
+
+    # Regions where subnets may exist (add/remove as needed)
+    regions:
+      - asia-south1
+      - asia-south2
+      - asia-east1
+      - asia-southeast1
+      - asia-southeast2
+      - us-central1
+      - us-east1
+      - us-east4
+      - us-west1
+      - europe-west1
 
   tasks:
 
-    - name: Get ALL subnets in the project
+    #################################################################
+    #           1. READ **ALL** SUBNETS ACROSS ALL REGIONS
+    #################################################################
+
+    - name: Get subnets from all regions
       google.cloud.gcp_compute_subnetwork_info:
         project: "{{ gcp_project }}"
-      register: all_subnets
+        region: "{{ item }}"
+      loop: "{{ regions }}"
+      register: subnet_info
+
+    - name: Merge regional subnet results into one list
+      set_fact:
+        all_subnets:
+          resources: "{{ subnet_info.results | map(attribute='resources') | flatten }}"
 
     - name: Extract all subnet names
       set_fact:
         all_names: "{{ all_subnets.resources | map(attribute='name') | list }}"
+
+    #################################################################
+    #      2. DISCOVER GROUP PREFIXES FROM NAMING PATTERN
+    #################################################################
 
     - name: Derive group prefixes automatically
       set_fact:
@@ -31,11 +59,15 @@
             | list
           }}
 
-    - name: Debug groups found
+    - name: Debug detected subnet groups
       debug:
         msg: "Detected subnet groups: {{ groups }}"
 
-    - name: Process each group
+    #################################################################
+    #   3. PROCESS EACH GROUP USING expand_group.yml LOGIC
+    #################################################################
+
+    - name: Process each discovered group
       include_tasks: expand_group.yml
       loop: "{{ groups }}"
       loop_control:
