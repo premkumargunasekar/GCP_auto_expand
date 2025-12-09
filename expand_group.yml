@@ -1,5 +1,6 @@
-# expand_group.yml
 ---
+# expand_group.yml — Processes ONE subnet group
+
 - name: Get subnets that belong to this group
   set_fact:
     group_subnets: >-
@@ -9,31 +10,35 @@
         | list
       }}
 
-- name: Skip if group has no subnets
+- name: Skip empty group
   when: group_subnets | length == 0
   debug:
-    msg: "Group {{ group_name }} has no subnets. Skipping."
+    msg: "Group {{ group_name }} has no subnets."
   ignore_errors: yes
 
-- name: Sort and pick the last subnet (highest number)
+- name: Pick last subnet (highest number)
   when: group_subnets | length > 0
   set_fact:
     last_subnet: "{{ group_subnets | sort(attribute='name') | last }}"
 
 - name: Extract number suffix
-  when: group_subnets | length > 0
+  when: last_subnet is defined
   set_fact:
     last_num_str: "{{ last_subnet.name | regex_search('\\-(\\d{3})-snt$', '\\1') }}"
     last_num: "{{ last_num_str | int }}"
 
-- name: Compute next subnet name
+- name: Generate new subnet name
+  when: last_subnet is defined
   set_fact:
     new_num: "{{ '%03d' | format(last_num + 1) }}"
     new_name: "{{ group_name }}-{{ new_num }}-snt"
 
-- name: Extract prefix length (/24,/23 etc.)
+- name: Extract prefix length
+  when: last_subnet is defined
   set_fact:
     prefix: "{{ last_subnet.ip_cidr_range.split('/')[-1] | int }}"
+
+# ---------------- UTILIZATION CHECK -------------------
 
 - name: Compute utilization
   set_fact:
@@ -45,50 +50,46 @@
   debug:
     msg: "Group {{ group_name }}: {{ last_subnet.name }} → {{ util_pct }}% used"
 
-- name: Stop here if below threshold
+- name: Skip if under threshold
   when: util_pct < threshold
   debug:
     msg: "No expansion needed for {{ group_name }} ({{ util_pct }}% < {{ threshold }}%)"
 
-# ---------------------------
-# CIDR AUTO DETECTION
-# ---------------------------
+# ---------------- FIND NEXT FREE CIDR -------------------
 
-- name: Collect all CIDRs in VPC (manual + automated)
+- name: Collect ALL VPC CIDRs (manual + automated)
   when: util_pct >= threshold
   set_fact:
     vpc_cidrs: "{{ all_subnets_info.resources | map(attribute='ip_cidr_range') | list }}"
 
-- name: Derive auto base CIDR (/16 from first two octets)
+- name: Auto-derive parent block (use /16 based on first 2 octets)
   when: util_pct >= threshold
   set_fact:
     last_ip: "{{ last_subnet.ip_cidr_range.split('/')[0] }}"
     octets: "{{ last_ip.split('.') }}"
     auto_base: "{{ octets[0] }}.{{ octets[1] }}.0.0/{{ auto_base_prefix }}"
 
-- name: Generate all candidate subnets (/prefix)
+- name: Generate all candidate subnets with same prefix
   when: util_pct >= threshold
   set_fact:
     candidate_list: "{{ auto_base | ipaddr('subnet', prefix) }}"
 
-- name: Remove CIDRs already used
+- name: Remove already used CIDRs
   when: util_pct >= threshold
   set_fact:
     free_candidates: "{{ candidate_list | reject('ipaddr', vpc_cidrs) | list }}"
 
-- name: Fail if no free CIDR
+- name: Fail if no CIDRs available
   when: util_pct >= threshold and free_candidates | length == 0
   fail:
-    msg: "NO FREE CIDR available for {{ group_name }} inside {{ auto_base }}"
+    msg: "No available CIDR found for {{ group_name }} inside {{ auto_base }}"
 
-- name: Choose the FIRST free CIDR
+- name: Pick the first free CIDR
   when: util_pct >= threshold
   set_fact:
     selected_cidr: "{{ free_candidates | first }}"
 
-# ---------------------------
-# SUBNET CREATION
-# ---------------------------
+# ---------------- CREATE SUBNET -------------------
 
 - name: Create new subnet
   when: util_pct >= threshold
@@ -98,7 +99,7 @@
     region: "{{ last_subnet.region }}"
     ip_cidr_range: "{{ selected_cidr }}"
     project: "{{ gcp_project }}"
-  register: result
+  register: create_result
 
 - name: Confirm creation
   when: util_pct >= threshold
