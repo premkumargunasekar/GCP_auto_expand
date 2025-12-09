@@ -6,7 +6,7 @@
   vars:
     threshold: 80
     auto_base_prefix: 16
-    suffix_pattern: '-\\d{3}-snt$'
+    suffix_pattern: '-\\d{3}-snt$'   # Match the ending
     number_segment_len: 3
 
     # Only your required GCP regions
@@ -39,18 +39,17 @@
         all_names: "{{ all_subnets.resources | map(attribute='name') | list }}"
 
     ###########################################################################
-    # 2) Auto-discover subnet groups (prefixes before -NNN-snt)
-    #    FIX: renamed groups → subnet_groups (avoid AWX conflict)
+    # 2) Auto-discover subnet group prefixes (CORRECTED)
     ###########################################################################
 
-    - name: Auto-discover subnet group prefixes
+    - name: Auto-discover subnet groups
       set_fact:
         subnet_groups: >-
           {{
             all_names
+            | select('search', suffix_pattern)
             | map('regex_replace', suffix_pattern, '')
             | unique
-            | reject('equalto','')
             | list
           }}
 
