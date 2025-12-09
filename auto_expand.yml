@@ -4,29 +4,23 @@
   gather_facts: no
 
   vars:
-    threshold: 80                   # Utilization percentage trigger
-    auto_base_prefix: 16            # Infer parent supernet as /16 from 1st two octets
-    suffix_pattern: '-\\d{3}-snt$'  # Naming format: Region-env-sol-region-001-snt
-    number_segment_len: 3           # 001 / 002 / 003 format
+    threshold: 80
+    auto_base_prefix: 16
+    suffix_pattern: '-\\d{3}-snt$'
+    number_segment_len: 3
 
-    # Regions where subnets may exist (add/remove as needed)
+    # Regions where your VPCs may have subnets
     regions:
-      - asia-south1
-      - asia-south2
-      - asia-east1
-      - asia-southeast1
-      - asia-southeast2
-      - us-central1
-      - us-east1
-      - us-east4
-      - us-west1
-      - europe-west1
+      - asia-south1       # AO
+      - europe-west1      # EU
+      - asia-east1        # AS
+      - us-central1       # NA
 
   tasks:
 
-    #################################################################
-    #           1. READ **ALL** SUBNETS ACROSS ALL REGIONS
-    #################################################################
+    ###########################################################################
+    # 1) Fetch ALL subnets across ALL regions (FIX FOR GOOGLE.CLOUD COLLECTION)
+    ###########################################################################
 
     - name: Get subnets from all regions
       google.cloud.gcp_compute_subnetwork_info:
@@ -35,7 +29,7 @@
       loop: "{{ regions }}"
       register: subnet_info
 
-    - name: Merge regional subnet results into one list
+    - name: Merge subnet results
       set_fact:
         all_subnets:
           resources: "{{ subnet_info.results | map(attribute='resources') | flatten }}"
@@ -44,13 +38,14 @@
       set_fact:
         all_names: "{{ all_subnets.resources | map(attribute='name') | list }}"
 
-    #################################################################
-    #      2. DISCOVER GROUP PREFIXES FROM NAMING PATTERN
-    #################################################################
+    ###########################################################################
+    # 2) Build group names automatically from subnet name prefix
+    #    FIX: renamed "groups" → "subnet_groups" to avoid AWX inventory conflict
+    ###########################################################################
 
-    - name: Derive group prefixes automatically
+    - name: Auto-discover subnet group prefixes
       set_fact:
-        groups: >-
+        subnet_groups: >-
           {{
             all_names
             | map('regex_replace', suffix_pattern, '')
@@ -59,17 +54,17 @@
             | list
           }}
 
-    - name: Debug detected subnet groups
+    - name: Debug subnet groups
       debug:
-        msg: "Detected subnet groups: {{ groups }}"
+        msg: "Detected subnet groups: {{ subnet_groups }}"
 
-    #################################################################
-    #   3. PROCESS EACH GROUP USING expand_group.yml LOGIC
-    #################################################################
+    ###########################################################################
+    # 3) Process each group using external task include
+    ###########################################################################
 
-    - name: Process each discovered group
+    - name: Process subnet group
       include_tasks: expand_group.yml
-      loop: "{{ groups }}"
+      loop: "{{ subnet_groups }}"
       loop_control:
         loop_var: group_name
       vars:
