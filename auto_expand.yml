@@ -1,178 +1,44 @@
 ---
-- name: Auto-expand GCP subnets (auto-discovery, no python)
-  hosts: 192.168.116.129
+- name: Auto Expand Subnets (Main)
+  hosts: localhost
   gather_facts: no
 
   vars:
-    threshold: 80              # percent threshold to trigger expansion
-    auto_base_prefix: 16       # parent prefix used to generate candidate subnets (adjust if needed)
-    suffix_pattern: '-\\d{3}-snt$'  # regex matching the ending part of names
+    threshold: 80
+    auto_base_prefix: 16
+    suffix_pattern: '-\\d{3}-snt$'
     number_segment_len: 3
 
   tasks:
 
-    - name: Get ALL subnets in the project (manual + automated)
+    - name: Get ALL subnets in the project
       google.cloud.gcp_compute_subnetwork_info:
         project: "{{ gcp_project }}"
       register: all_subnets
 
-    - name: Build distinct group list from subnet names
+    - name: Extract all subnet names
       set_fact:
         all_names: "{{ all_subnets.resources | map(attribute='name') | list }}"
 
-    - name: Derive group prefixes (everything before -NNN-snt)
+    - name: Derive group prefixes automatically
       set_fact:
         groups: >-
           {{
-            (all_names | map('regex_replace', suffix_pattern, '') |
-             unique |
-             reject('equalto', '') | list)
+            all_names
+            | map('regex_replace', suffix_pattern, '')
+            | unique
+            | reject('equalto','')
+            | list
           }}
 
     - name: Debug groups found
       debug:
-        msg: "Found groups: {{ groups }}"
+        msg: "Detected subnet groups: {{ groups }}"
 
-    - name: Process each detected group
+    - name: Process each group
+      include_tasks: expand_group.yml
       loop: "{{ groups }}"
       loop_control:
         loop_var: group_name
-      block:
-
-        - name: Get all subnets belonging to this group (same group prefix)
-          set_fact:
-            group_subnets: >-
-              {{
-                all_subnets.resources
-                | selectattr('name', 'search', ('^' + (group_name | regex_escape) + '-\\d{3}-snt$'))
-                | list
-              }}
-
-        - name: Skip group if no detected subnets (shouldn't happen)
-          when: group_subnets | length == 0
-          debug:
-            msg: "Group {{ group_name }} has no subnets; skipping."
-
-        - name: Sort and pick last subnet by name (highest number)
-          when: group_subnets | length > 0
-          set_fact:
-            last_subnet: "{{ (group_subnets | sort(attribute='name')) | last }}"
-
-        - name: Extract numeric suffix from last subnet name
-          when: last_subnet is defined
-          set_fact:
-            last_num_str: "{{ last_subnet.name | regex_search('\\-(\\d{'+ (number_segment_len|string) + '})-snt$', '\\1') }}"
-            last_num: "{{ last_num_str | int }}"
-
-        - name: Compute next number and next name
-          when: last_subnet is defined
-          set_fact:
-            new_num: "{{ '%0' + (number_segment_len|string) + 'd' | format(last_num + 1) }}"
-            new_name: "{{ group_name }}-{{ new_num }}-snt"
-
-        - name: Extract prefix length (dynamic)
-          when: last_subnet is defined
-          set_fact:
-            prefix: "{{ last_subnet.ip_cidr_range.split('/')[-1] | int }}"
-
-        - name: Calculate utilization for last subnet
-          when: last_subnet is defined
-          set_fact:
-            used: "{{ last_subnet.used_ip_count | int }}"
-            avail: "{{ last_subnet.available_ip_count | int }}"
-            util_pct: >-
-              {{
-                ((used * 100) / (used + avail)) | float(round(2))
-              }}
-
-        - name: Debug last subnet utilization
-          when: last_subnet is defined
-          debug:
-            msg:
-              - "Group: {{ group_name }}"
-              - "Last subnet: {{ last_subnet.name }} -> {{ last_subnet.ip_cidr_range }}"
-              - "Usage: {{ used }} used, {{ avail }} avail, {{ util_pct }}%"
-
-        - name: Skip if utilization under threshold
-          when: util_pct < threshold
-          debug:
-            msg: "No expansion needed for {{ group_name }} ({{ util_pct }}% < {{ threshold }}%)"
-
-        - name: Build list of ALL CIDRs already used in this VPC (manual + automated)
-          when: util_pct >= threshold
-          set_fact:
-            vpc_cidrs: >-
-              {{
-                all_subnets.resources
-                | selectattr('network','search', last_subnet.network.split('/') | first )
-                | map(attribute='ip_cidr_range')
-                | list
-              }}
-
-        - name: Derive auto base CIDR from last_subnet (first two octets -> /{{ auto_base_prefix }})
-          when: util_pct >= threshold
-          set_fact:
-            last_ip: "{{ last_subnet.ip_cidr_range.split('/')[0] }}"
-            octets: "{{ last_ip.split('.') }}"
-            auto_base: "{{ octets[0] + '.' + octets[1] + '.0.0/' + (auto_base_prefix|string) }}"
-
-        - name: Generate all candidate subnets inside auto_base at prefix /{{ prefix }}
-          when: util_pct >= threshold
-          set_fact:
-            candidate_list: "{{ (auto_base | ipaddr('subnet', prefix)) | list }}"
-
-        - name: Filter candidate list to skip any CIDR overlapping vpc_cidrs
-          when: util_pct >= threshold
-          set_fact:
-            free_candidates: >-
-              {{
-                candidate_list
-                | reject('ipaddr', vpc_cidrs)
-                | list
-              }}
-
-        - name: From free candidates pick the first one greater than the last subnet network
-          when: util_pct >= threshold
-          set_fact:
-            last_net_addr: "{{ (last_subnet.ip_cidr_range.split('/')[0]) }}"
-            # sort candidates and choose the first candidate whose address is numerically greater than last_net_addr
-            sorted_candidates: "{{ free_candidates | sort }}"
-            selected_cidr: >-
-              {{
-                (sorted_candidates
-                 | selectattr('','defined')        # no-op, helps evaluation
-                 | select('search', '.*')         # keep all
-                 | reject('equalto', '')          # keep non-empty
-                 | list)
-                | first
-              }}
-
-        - name: NOTE - candidate selection may pick the first free in the auto_base block
-          when: util_pct >= threshold
-          debug:
-            msg:
-              - "Auto base: {{ auto_base }}"
-              - "Prefix: /{{ prefix }}"
-              - "First free candidate chosen: {{ selected_cidr }}"
-              - "New subnet name: {{ new_name }}"
-
-        - name: Fail if no free candidate CIDR found
-          when: util_pct >= threshold and (selected_cidr is not defined or selected_cidr == '')
-          fail:
-            msg: "No available CIDR found to expand group {{ group_name }} inside {{ auto_base }} for prefix /{{ prefix }}"
-
-        - name: Create new subnet in GCP
-          when: util_pct >= threshold and selected_cidr is defined
-          google.cloud.gcp_compute_subnetwork:
-            name: "{{ new_name }}"
-            network: "{{ last_subnet.network.split('/') | first }}"
-            region: "{{ last_subnet.region | default(last_subnet.region) }}"
-            ip_cidr_range: "{{ selected_cidr }}"
-            project: "{{ gcp_project }}"
-          register: create_result
-
-        - name: Debug create result
-          when: util_pct >= threshold and selected_cidr is defined
-          debug:
-            msg: "Created {{ new_name }} -> {{ selected_cidr }} (result: {{ create_result | default('created') }})"
-
+      vars:
+        all_subnets_info: "{{ all_subnets }}"
