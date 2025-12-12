@@ -1,68 +1,53 @@
 ---
-- name: Auto Expand Subnets (Main)
+- name: Auto Expand Subnets
   hosts: localhost
   gather_facts: no
 
   vars:
     threshold: 80
     auto_base_prefix: 16
-
-    # Correct suffix pattern
     suffix_pattern: '-[0-9]{3}-snt$'
 
-    # Only required GCP regions
     regions:
-      - asia-south1       # AO
-      - europe-west1      # EU
-      - asia-east1        # AS
-      - us-central1       # NA
+      - asia-south1
+      - europe-west1
+      - asia-east1
+      - us-central1
 
   tasks:
 
-    ###########################################################################
-    # 1) Fetch ALL subnets across required regions
-    ###########################################################################
-
-    - name: Get subnets from allowed regions
+    - name: Get subnets from all regions
       google.cloud.gcp_compute_subnetwork_info:
         project: "{{ gcp_project }}"
         region: "{{ item }}"
       loop: "{{ regions }}"
-      register: subnet_info
+      register: r
 
-    - name: Merge subnet results
+    - name: Flatten subnets
       set_fact:
         all_subnets:
-          resources: "{{ subnet_info.results | map(attribute='resources') | flatten }}"
+          resources: "{{ r.results | map(attribute='resources') | flatten }}"
 
-    - name: Extract all subnet names
+    - name: Extract names
       set_fact:
         all_names: "{{ all_subnets.resources | map(attribute='name') | list }}"
 
-    ###########################################################################
-    # 2) Auto-discover subnet groups (prefix extraction)
-    ###########################################################################
-
-    - name: Auto-discover subnet groups
+    - name: Detect group prefixes
       set_fact:
         subnet_groups: >-
           {{
-            all_names
+            all_names 
             | select('search', suffix_pattern)
             | map('regex_replace', suffix_pattern, '')
-            | reject('equalto', '')
             | unique
             | list
           }}
 
-    - debug:
-        msg: "Detected subnet groups: {{ subnet_groups }}"
+    - name: Show detected groups
+      debug:
+        msg: "{{ subnet_groups }}"
 
-    ###########################################################################
-    # 3) Process each group
-    ###########################################################################
-
-    - name: Process each subnet group
+    - name: Process each group
       include_tasks: expand_group.yml
       loop: "{{ subnet_groups }}"
       loop_control:
