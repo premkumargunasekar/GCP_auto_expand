@@ -1,5 +1,5 @@
 ---
-# expand_group.yml — AWX-safe version
+# expand_group.yml — Final AWX-safe + Regex Fix Version
 
 ###############################################################################
 # 1) Get ALL subnets belonging to this prefix
@@ -18,7 +18,7 @@
     msg: "Group {{ group_name }} has subnets: {{ group_subnets | map(attribute='name') | list }}"
 
 ###############################################################################
-# 2) Skip group safely if no subnets match (AWX-safe)
+# 2) Skip group safely if no subnets match
 ###############################################################################
 
 - name: No subnets found → skipping group
@@ -27,7 +27,7 @@
     msg: "Skipping {{ group_name }} — no subnets in this group."
 
 ###############################################################################
-# 3) Identify LAST subnet (highest number)
+# 3) Identify LAST subnet and extract suffix (FIXED)
 ###############################################################################
 
 - name: Identify last subnet
@@ -35,11 +35,17 @@
   set_fact:
     last_subnet: "{{ group_subnets | sort(attribute='name') | last }}"
 
-- name: Extract number suffix (001 → 002)
+# FIXED — ALWAYS RETURNS LIST
+- name: Extract numeric suffix list
   when: group_subnets | length > 0
   set_fact:
-    last_num_str: "{{ last_subnet.name | regex_search('-([0-9]{3})-snt$', '\\1') }}"
-    last_num: "{{ last_num_str | int }}"
+    last_num_list: "{{ last_subnet.name | regex_findall('-([0-9]{3})-snt$') }}"
+
+# FIXED — Guaranteed not to be undefined
+- name: Convert suffix to integer
+  when: last_num_list | length > 0
+  set_fact:
+    last_num: "{{ last_num_list[0] | int }}"
 
 - name: Build next subnet name
   when: group_subnets | length > 0
@@ -66,7 +72,7 @@
 - debug:
     msg: "Group {{ group_name }} → Utilization: {{ util_pct }}%"
 
-- name: Skip expansion (below threshold)
+- name: Skip expansion (utilization below threshold)
   when: group_subnets | length > 0 and util_pct < threshold
   debug:
     msg: "Utilization < {{ threshold }}% → No expansion required."
@@ -80,35 +86,35 @@
   set_fact:
     vpc_cidrs: "{{ all_subnets_info.resources | map(attribute='ip_cidr_range') | list }}"
 
-- name: Auto-derive /16 base (first 2 octets)
+- name: Auto-derive /16 base from last subnet
   when: group_subnets | length > 0 and util_pct >= threshold
   set_fact:
     last_ip: "{{ last_subnet.ip_cidr_range.split('/')[0] }}"
     octets: "{{ last_ip.split('.') }}"
     auto_base: "{{ octets[0] }}.{{ octets[1] }}.0.0/{{ auto_base_prefix }}"
 
-- name: Generate candidate /prefix CIDRs
+- name: Generate candidate subnets
   when: group_subnets | length > 0 and util_pct >= threshold
   set_fact:
     candidate_list: "{{ auto_base | ipaddr('subnet', prefix) }}"
 
-- name: Remove CIDRs already used
+- name: Remove used CIDRs
   when: group_subnets | length > 0 and util_pct >= threshold
   set_fact:
     free_candidates: "{{ candidate_list | reject('ipaddr', vpc_cidrs) | list }}"
 
-- name: Stop if no CIDR is free
+- name: Fail if no free CIDR
   when: group_subnets | length > 0 and util_pct >= threshold and free_candidates | length == 0
   fail:
     msg: "No free CIDR available for {{ group_name }}"
 
-- name: Select the first available CIDR
+- name: Select free CIDR
   when: group_subnets | length > 0 and util_pct >= threshold
   set_fact:
     selected_cidr: "{{ free_candidates | first }}"
 
 ###############################################################################
-# 6) Create the new subnet
+# 6) Create subnet (only if threshold exceeded)
 ###############################################################################
 
 - name: Create new subnet
