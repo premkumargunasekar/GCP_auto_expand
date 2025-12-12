@@ -1,5 +1,5 @@
 ---
-# expand_group.yml — Final AWX-safe + Regex Fix Version
+# expand_group.yml — Final stable AWX version
 
 ###############################################################################
 # 1) Get ALL subnets belonging to this prefix
@@ -18,16 +18,16 @@
     msg: "Group {{ group_name }} has subnets: {{ group_subnets | map(attribute='name') | list }}"
 
 ###############################################################################
-# 2) Skip group safely if no subnets match
+# 2) Skip this group safely if no subnets found
 ###############################################################################
 
 - name: No subnets found → skipping group
   when: group_subnets | length == 0
   debug:
-    msg: "Skipping {{ group_name }} — no subnets in this group."
+    msg: "Skipping {{ group_name }} — no matching subnets."
 
 ###############################################################################
-# 3) Identify LAST subnet and extract suffix (FIXED)
+# 3) Identify LAST subnet and extract suffix (safe & correct)
 ###############################################################################
 
 - name: Identify last subnet
@@ -35,22 +35,23 @@
   set_fact:
     last_subnet: "{{ group_subnets | sort(attribute='name') | last }}"
 
-# FIXED — ALWAYS RETURNS LIST
+# FIX 1 — regex_findall ALWAYS RETURNS A LIST, AVIODING UNDEFINED VARIABLE
 - name: Extract numeric suffix list
   when: group_subnets | length > 0
   set_fact:
     last_num_list: "{{ last_subnet.name | regex_findall('-([0-9]{3})-snt$') }}"
 
-# FIXED — Guaranteed not to be undefined
+# FIX 2 — Explicit integer conversion
 - name: Convert suffix to integer
   when: last_num_list | length > 0
   set_fact:
     last_num: "{{ last_num_list[0] | int }}"
 
+# FIX 3 — Format next number safely and correctly
 - name: Build next subnet name
   when: group_subnets | length > 0
   set_fact:
-    new_num: "{{ '%03d' | format(last_num + 1) }}"
+    new_num: "{{ '%03d' | format((last_num | int) + 1) }}"
     new_name: "{{ group_name }}-{{ new_num }}-snt"
 
 ###############################################################################
@@ -70,15 +71,15 @@
     util_pct: "{{ ((used * 100) / (used + avail)) | float | round(2) if (used + avail) > 0 else 0 }}"
 
 - debug:
-    msg: "Group {{ group_name }} → Utilization: {{ util_pct }}%"
+    msg: "Group {{ group_name }} → Utilization: {{ util_pct }}% (Threshold: {{ threshold }}%)"
 
 - name: Skip expansion (utilization below threshold)
   when: group_subnets | length > 0 and util_pct < threshold
   debug:
-    msg: "Utilization < {{ threshold }}% → No expansion required."
+    msg: "Utilization {{ util_pct }}% < threshold {{ threshold }}% → Not expanding."
 
 ###############################################################################
-# 5) CIDR Selection (Skip manual subnets)
+# 5) CIDR Selection (Skips manual subnets automatically)
 ###############################################################################
 
 - name: Collect ALL VPC CIDRs (manual + automated)
@@ -93,7 +94,7 @@
     octets: "{{ last_ip.split('.') }}"
     auto_base: "{{ octets[0] }}.{{ octets[1] }}.0.0/{{ auto_base_prefix }}"
 
-- name: Generate candidate subnets
+- name: Generate candidate subnets (/24, /27 etc.)
   when: group_subnets | length > 0 and util_pct >= threshold
   set_fact:
     candidate_list: "{{ auto_base | ipaddr('subnet', prefix) }}"
@@ -103,18 +104,18 @@
   set_fact:
     free_candidates: "{{ candidate_list | reject('ipaddr', vpc_cidrs) | list }}"
 
-- name: Fail if no free CIDR
+- name: No free CIDR available → stop
   when: group_subnets | length > 0 and util_pct >= threshold and free_candidates | length == 0
   fail:
-    msg: "No free CIDR available for {{ group_name }}"
+    msg: "No free CIDR available for {{ group_name }} (prefix /{{ prefix }}) inside {{ auto_base }}."
 
-- name: Select free CIDR
+- name: Select first available CIDR
   when: group_subnets | length > 0 and util_pct >= threshold
   set_fact:
     selected_cidr: "{{ free_candidates | first }}"
 
 ###############################################################################
-# 6) Create subnet (only if threshold exceeded)
+# 6) Create the new subnet
 ###############################################################################
 
 - name: Create new subnet
