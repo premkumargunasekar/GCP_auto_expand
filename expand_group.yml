@@ -1,10 +1,6 @@
 ---
 # expand_group.yml — FINAL FIXED VERSION
 
-###############################################################################
-# 1) Get subnets for this group
-###############################################################################
-
 - name: Get subnets belonging to this prefix
   set_fact:
     group_subnets: >-
@@ -17,18 +13,10 @@
 - debug:
     msg: "Group {{ group_name }} → {{ group_subnets | map(attribute='name') | list }}"
 
-###############################################################################
-# 2) Skip if empty
-###############################################################################
-
 - name: Skip — no subnets
   when: group_subnets | length == 0
   debug:
     msg: "Skipping {{ group_name }} — no matching subnets."
-
-###############################################################################
-# 3) Extract suffix
-###############################################################################
 
 - name: Pick last subnet
   when: group_subnets | length > 0
@@ -40,21 +28,10 @@
   set_fact:
     last_num_list: "{{ last_subnet.name | regex_findall('-([0-9]{3})-snt$') }}"
 
-- debug:
-    msg: "Suffix list → {{ last_num_list }}"
-
-###############################################################################
-# 4) Convert suffix to number
-###############################################################################
-
 - name: Convert suffix to int
   when: last_num_list is defined and last_num_list | length > 0
   set_fact:
     last_num: "{{ last_num_list[0] | int }}"
-
-###############################################################################
-# 5) BUILD NEXT SUBNET NAME — THIS FIXES YOUR ERROR
-###############################################################################
 
 - name: Build next subnet name
   when: last_num is defined
@@ -63,39 +40,5 @@
     new_name: "{{ group_name }}-{{ new_num }}-snt"
 
 - debug:
-    when: last_num is defined
-    msg: "Next subnet will be → {{ new_name }}"
-
-###############################################################################
-# 6) Mock utilization just for testing
-###############################################################################
-
-- set_fact:
-    used: 10
-    avail: 246
-    util_pct: "{{ (used * 100 / (used + avail)) | float }}"
-
-- debug:
-    msg: "Utilization: {{ util_pct }}%"
-
-###############################################################################
-# 7) Stop if below threshold
-###############################################################################
-
-- name: Below threshold → Stop
-  when: util_pct < threshold
-  debug:
-    msg: "Below threshold → Not expanding"
-
-###############################################################################
-# 8) Create new subnet (if above threshold)
-###############################################################################
-
-- name: Create subnet
-  when: util_pct >= threshold
-  google.cloud.gcp_compute_subnetwork:
-    name: "{{ new_name }}"
-    region: "{{ last_subnet.region }}"
-    network: "{{ last_subnet.network }}"
-    ip_cidr_range: "{{ selected_cidr }}"
-    project: "{{ gcp_project }}"
+    when: new_name is defined
+    msg: "Next subnet → {{ new_name }}"
