@@ -1,5 +1,5 @@
 ---
-# expand_group.yml — Final stable AWX version
+# expand_group.yml — Final AWX-safe + debug-ready version
 
 ###############################################################################
 # 1) Get ALL subnets belonging to this prefix
@@ -15,10 +15,10 @@
       }}
 
 - debug:
-    msg: "Group {{ group_name }} has subnets: {{ group_subnets | map(attribute='name') | list }}"
+    msg: "Group {{ group_name }} subnets: {{ group_subnets | map(attribute='name') | list }}"
 
 ###############################################################################
-# 2) Skip this group safely if no subnets found
+# 2) Skip this group if NO subnets matched
 ###############################################################################
 
 - name: No subnets found → skipping group
@@ -27,7 +27,7 @@
     msg: "Skipping {{ group_name }} — no matching subnets."
 
 ###############################################################################
-# 3) Identify LAST subnet and extract suffix (safe & correct)
+# 3) Identify LAST subnet and extract suffix (SAFE)
 ###############################################################################
 
 - name: Identify last subnet
@@ -35,21 +35,18 @@
   set_fact:
     last_subnet: "{{ group_subnets | sort(attribute='name') | last }}"
 
-# FIX 1 — regex_findall ALWAYS RETURNS A LIST, AVIODING UNDEFINED VARIABLE
-- name: Extract numeric suffix list
+- name: Extract numeric suffix list (fix for undefined)
   when: group_subnets | length > 0
   set_fact:
     last_num_list: "{{ last_subnet.name | regex_findall('-([0-9]{3})-snt$') }}"
 
-# FIX 2 — Explicit integer conversion
 - name: Convert suffix to integer
   when: last_num_list | length > 0
   set_fact:
     last_num: "{{ last_num_list[0] | int }}"
 
-# FIX 3 — Format next number safely and correctly
-- name: Build next subnet name
-  when: group_subnets | length > 0
+- name: Build next subnet name (SAFE INT conversion)
+  when: last_num_list | length > 0
   set_fact:
     new_num: "{{ '%03d' | format((last_num | int) + 1) }}"
     new_name: "{{ group_name }}-{{ new_num }}-snt"
@@ -59,67 +56,68 @@
 ###############################################################################
 
 - name: Extract prefix length (/24 etc.)
-  when: group_subnets | length > 0
+  when: last_num_list | length > 0
   set_fact:
     prefix: "{{ last_subnet.ip_cidr_range.split('/')[-1] | int }}"
 
 - name: Compute utilization
-  when: group_subnets | length > 0
+  when: last_num_list | length > 0
   set_fact:
     used: "{{ last_subnet.used_ip_count | default(0) }}"
     avail: "{{ last_subnet.available_ip_count | default(0) }}"
     util_pct: "{{ ((used * 100) / (used + avail)) | float | round(2) if (used + avail) > 0 else 0 }}"
 
 - debug:
+    when: last_num_list | length > 0
     msg: "Group {{ group_name }} → Utilization: {{ util_pct }}% (Threshold: {{ threshold }}%)"
 
 - name: Skip expansion (utilization below threshold)
-  when: group_subnets | length > 0 and util_pct < threshold
+  when: last_num_list | length > 0 and util_pct < threshold
   debug:
     msg: "Utilization {{ util_pct }}% < threshold {{ threshold }}% → Not expanding."
 
 ###############################################################################
-# 5) CIDR Selection (Skips manual subnets automatically)
+# 5) CIDR Selection (Skips manual subnets)
 ###############################################################################
 
-- name: Collect ALL VPC CIDRs (manual + automated)
-  when: group_subnets | length > 0 and util_pct >= threshold
+- name: Collect ALL VPC CIDRs (manual + auto)
+  when: last_num_list | length > 0 and util_pct >= threshold
   set_fact:
     vpc_cidrs: "{{ all_subnets_info.resources | map(attribute='ip_cidr_range') | list }}"
 
-- name: Auto-derive /16 base from last subnet
-  when: group_subnets | length > 0 and util_pct >= threshold
+- name: Auto-derive /16 base
+  when: last_num_list | length > 0 and util_pct >= threshold
   set_fact:
     last_ip: "{{ last_subnet.ip_cidr_range.split('/')[0] }}"
     octets: "{{ last_ip.split('.') }}"
     auto_base: "{{ octets[0] }}.{{ octets[1] }}.0.0/{{ auto_base_prefix }}"
 
-- name: Generate candidate subnets (/24, /27 etc.)
-  when: group_subnets | length > 0 and util_pct >= threshold
+- name: Generate candidate subnets (/24, /27, etc.)
+  when: last_num_list | length > 0 and util_pct >= threshold
   set_fact:
     candidate_list: "{{ auto_base | ipaddr('subnet', prefix) }}"
 
-- name: Remove used CIDRs
-  when: group_subnets | length > 0 and util_pct >= threshold
+- name: Filter out used CIDRs
+  when: last_num_list | length > 0 and util_pct >= threshold
   set_fact:
     free_candidates: "{{ candidate_list | reject('ipaddr', vpc_cidrs) | list }}"
 
-- name: No free CIDR available → stop
-  when: group_subnets | length > 0 and util_pct >= threshold and free_candidates | length == 0
+- name: No free CIDRs → fail
+  when: last_num_list | length > 0 and util_pct >= threshold and free_candidates | length == 0
   fail:
-    msg: "No free CIDR available for {{ group_name }} (prefix /{{ prefix }}) inside {{ auto_base }}."
+    msg: "No free CIDR available for {{ group_name }} inside {{ auto_base }}."
 
 - name: Select first available CIDR
-  when: group_subnets | length > 0 and util_pct >= threshold
+  when: last_num_list | length > 0 and util_pct >= threshold
   set_fact:
     selected_cidr: "{{ free_candidates | first }}"
 
 ###############################################################################
-# 6) Create the new subnet
+# 6) Create new subnet in GCP
 ###############################################################################
 
 - name: Create new subnet
-  when: group_subnets | length > 0 and util_pct >= threshold
+  when: last_num_list | length > 0 and util_pct >= threshold
   google.cloud.gcp_compute_subnetwork:
     name: "{{ new_name }}"
     network: "{{ last_subnet.network.split('/') | first }}"
@@ -129,5 +127,5 @@
   register: subnet_result
 
 - debug:
-    when: group_subnets | length > 0 and util_pct >= threshold
+    when: last_num_list | length > 0 and util_pct >= threshold
     msg: "Created subnet → {{ new_name }} : {{ selected_cidr }}"
