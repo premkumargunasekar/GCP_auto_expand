@@ -6,10 +6,12 @@
   vars:
     threshold: 80
     auto_base_prefix: 16
-    suffix_pattern: '-\\d{3}-snt$'   # Match the ending
+
+    # FIXED REGEX → correct detection of -NNN-snt suffix
+    suffix_pattern: '-[0-9]{3}-snt$'
     number_segment_len: 3
 
-    # Only your required GCP regions
+    # Only the regions you actually use
     regions:
       - asia-south1       # AO
       - europe-west1      # EU
@@ -19,7 +21,7 @@
   tasks:
 
     ###########################################################################
-    # 1) Fetch ALL subnets from the 4 allowed regions
+    # 1) Fetch ALL subnets from the allowed regions
     ###########################################################################
 
     - name: Get subnets from allowed regions
@@ -39,16 +41,17 @@
         all_names: "{{ all_subnets.resources | map(attribute='name') | list }}"
 
     ###########################################################################
-    # 2) Auto-discover subnet group prefixes (CORRECTED)
+    # 2) Auto-discover subnet prefixes (FIXED LOGIC)
     ###########################################################################
 
-    - name: Auto-discover subnet groups
+    - name: Auto-discover subnet groups (corrected regex)
       set_fact:
         subnet_groups: >-
           {{
             all_names
             | select('search', suffix_pattern)
             | map('regex_replace', suffix_pattern, '')
+            | reject('equalto', '')
             | unique
             | list
           }}
@@ -61,7 +64,7 @@
     # 3) Process each group via expand_group.yml
     ###########################################################################
 
-    - name: Process subnet group
+    - name: Process each discovered group
       include_tasks: expand_group.yml
       loop: "{{ subnet_groups }}"
       loop_control:
