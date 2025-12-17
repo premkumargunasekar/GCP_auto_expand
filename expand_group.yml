@@ -1,5 +1,5 @@
 ---
-# expand_group.yml — FINAL STABLE VERSION
+# expand_group.yml — FINAL STABLE VERSION (AWX SAFE)
 
 ###############################################################################
 # 1) Collect subnets for this group
@@ -10,15 +10,16 @@
     group_subnets: >-
       {{
         all_subnets.resources
-        | selectattr('name', 'match', '^' + group_name + '-[0-9]{3}-snt$')
+        | selectattr('name', 'search', '^' ~ group_name ~ '-[0-9]{3}-snt$')
         | list
       }}
 
-- debug:
+- name: Show group subnets
+  debug:
     msg: "Group {{ group_name }} subnets: {{ group_subnets | map(attribute='name') | list }}"
 
 ###############################################################################
-# 2) Skip if no subnets
+# 2) Skip group if empty
 ###############################################################################
 
 - name: Skip group if no subnets
@@ -26,7 +27,7 @@
   when: group_subnets | length == 0
 
 ###############################################################################
-# 3) Identify LAST subnet safely
+# 3) Identify last subnet (sorted)
 ###############################################################################
 
 - name: Identify last subnet
@@ -34,63 +35,74 @@
     last_subnet: "{{ group_subnets | sort(attribute='name') | last }}"
 
 ###############################################################################
-# 4) Extract suffix NUMBER (SAFE INT CONVERSION)
+# 4) SAFE suffix extraction (NO regex_search)
 ###############################################################################
 
-- name: Extract numeric suffix as INTEGER
+- name: Extract suffix list safely
   set_fact:
-    last_num: >-
-      {{
-        (
-          last_subnet.name
-          | regex_search('([0-9]{3})-snt$', '\\1')
-        )
-        | int
-      }}
+    suffix_list: "{{ last_subnet.name | regex_findall('([0-9]{3})-snt$') }}"
 
-###############################################################################
-# 5) Build next subnet name (NO STRING MATH)
-###############################################################################
+- name: Validate suffix exists
+  fail:
+    msg: "Subnet name format invalid: {{ last_subnet.name }}"
+  when: suffix_list | length == 0
 
-- name: Build next subnet name
+- name: Compute next subnet name
   set_fact:
-    next_num: "{{ '%03d' | format(last_num + 1) }}"
-    new_subnet_name: "{{ group_name }}-{{ next_num }}-snt"
-
-- debug:
-    msg: "Next subnet name will be {{ new_subnet_name }}"
+    next_index: "{{ '%03d' | format((suffix_list[0] | int) + 1) }}"
+    new_name: "{{ group_name }}-{{ next_index }}-snt"
 
 ###############################################################################
-# 6) Utilization check (placeholder)
+# 5) Utilization check (safe defaults)
 ###############################################################################
 
-- name: Skip creation if utilization below threshold
-  when: (last_subnet.used_ip_count | default(0)) < threshold
+- name: Compute utilization
+  set_fact:
+    used: "{{ last_subnet.used_ip_count | default(0) }}"
+    avail: "{{ last_subnet.available_ip_count | default(0) }}"
+    util_pct: "{{ ((used * 100) / (used + avail)) | round(2) if (used + avail) > 0 else 0 }}"
+
+- name: Show utilization
+  debug:
+    msg: "Utilization {{ util_pct }}% (threshold {{ threshold }}%)"
+
+- name: Skip if utilization below threshold
   meta: end_host
+  when: util_pct < threshold
 
 ###############################################################################
-# 7) CIDR calculation (example logic)
+# 6) CIDR selection (manual subnets auto-skipped)
 ###############################################################################
 
-- name: Derive prefix
+- name: Collect used CIDRs
   set_fact:
-    prefix: "{{ last_subnet.ipCidrRange.split('/')[-1] | int }}"
+    used_cidrs: "{{ all_subnets.resources | map(attribute='ipCidrRange') | list }}"
 
 - name: Derive base /16
   set_fact:
-    base_cidr: >-
-      {{
-        last_subnet.ipCidrRange.split('.')[0]
-      }}.{{ last_subnet.ipCidrRange.split('.')[1] }}.0.0/16
+    base_net: "{{ last_subnet.ipCidrRange.split('/')[0].split('.')[0:2] | join('.') }}.0.0/{{ auto_base_prefix }}"
+
+- name: Generate candidate subnets
+  set_fact:
+    candidates: "{{ base_net | ipaddr('subnet', last_subnet.ipCidrRange.split('/')[-1] | int) }}"
+
+- name: Select free subnet
+  set_fact:
+    free_subnet: "{{ candidates | reject('ipaddr', used_cidrs) | list | first }}"
+
+- name: Fail if no CIDR available
+  fail:
+    msg: "No free CIDR available for {{ group_name }}"
+  when: free_subnet is not defined
 
 ###############################################################################
-# 8) Create subnet
+# 7) Create subnet
 ###############################################################################
 
-- name: Create new subnet
+- name: Create expanded subnet
   google.cloud.gcp_compute_subnetwork:
+    name: "{{ new_name }}"
     project: "{{ gcp_project }}"
-    region: "{{ last_subnet.region.split('/')[-1] }}"
+    region: "{{ last_subnet.region | regex_replace('.*/', '') }}"
     network: "{{ last_subnet.network }}"
-    name: "{{ new_subnet_name }}"
-    ip_cidr_range: "{{ base_cidr | ipaddr('subnet', prefix) | difference(all_subnets.resources | map(attribute='ipCidrRange') | list) | first }}"
+    ip_cidr_range: "{{ free_subnet }}"
