@@ -4,7 +4,7 @@
   gather_facts: no
 
   vars:
-    py_script: /etc/ansible/Auto_Expand
+    py_script: /etc/ansible/Auto_Expand/expand_subnet.py
 
   tasks:
     - name: Verify python script exists
