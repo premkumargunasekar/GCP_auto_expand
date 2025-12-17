@@ -2,7 +2,7 @@
 - name: Run IPAM Python on local server
   hosts: 192.168.116.128
   gather_facts: no
-
+  connection: ssh
   vars:
     py_script: /etc/ansible/Auto_Expand/expand_subnet.py
 
