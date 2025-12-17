@@ -1,6 +1,6 @@
 ---
 - name: Run IPAM Python on local server
-  hosts: localhost
+  hosts: 192.168.116.128
   gather_facts: no
 
   vars:
