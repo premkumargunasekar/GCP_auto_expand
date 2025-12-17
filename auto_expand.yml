@@ -1,19 +1,16 @@
 ---
-- name: Auto expand subnet (Python + Ansible)
+- name: Auto expand subnet (Python wrapper)
   hosts: localhost
   gather_facts: no
 
   vars:
     gcp_project: network-automation-471112
-    group_name: ao-np-api-asia-south1
 
   tasks:
 
     - name: Run Python IPAM logic
       command: >
-        python3 scripts/expand_subnet.py
-        {{ gcp_project }}
-        {{ group_name }}
+        python3 expand_subnet.py {{ gcp_project }}
       register: py_out
       changed_when: false
 
@@ -21,7 +18,7 @@
       set_fact:
         ipam: "{{ py_out.stdout | from_json }}"
 
-    - name: Skip when no expansion needed
+    - name: Skip when nothing to do
       meta: end_play
       when: ipam.skip | default(false)
 
@@ -30,7 +27,7 @@
         msg: "{{ ipam.error }}"
       when: ipam.error is defined
 
-    - name: Create new subnet
+    - name: Create subnet
       google.cloud.gcp_compute_subnetwork:
         project: "{{ gcp_project }}"
         name: "{{ ipam.new_name }}"
@@ -38,6 +35,5 @@
         network: "{{ ipam.network }}"
         ip_cidr_range: "{{ ipam.cidr }}"
 
-    - name: Success
-      debug:
-        msg: "Subnet {{ ipam.new_name }} created with {{ ipam.cidr }}"
+    - debug:
+        msg: "Created subnet {{ ipam.new_name }} with {{ ipam.cidr }}"
