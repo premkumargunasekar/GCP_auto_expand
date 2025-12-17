@@ -4,7 +4,7 @@
   gather_facts: no
   connection: ssh
   vars:
-    py_script: /etc/ansible/Auto_Expand/expand_subnet.py
+    py_script: /etc/ansible/Auto_expand/expand_subnet.py
 
   tasks:
     - name: Verify python script exists
