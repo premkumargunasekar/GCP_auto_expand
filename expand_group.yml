@@ -1,5 +1,5 @@
 ---
-# expand_group.yml — FINAL CLEAN VERSION
+# expand_group.yml — FINAL STABLE VERSION
 
 ###############################################################################
 # 1) Collect subnets for this group
@@ -10,94 +10,87 @@
     group_subnets: >-
       {{
         all_subnets.resources
-        | selectattr('name', 'search', '^' ~ group_name ~ '-[0-9]{3}-snt$')
+        | selectattr('name', 'match', '^' + group_name + '-[0-9]{3}-snt$')
         | list
       }}
 
 - debug:
     msg: "Group {{ group_name }} subnets: {{ group_subnets | map(attribute='name') | list }}"
 
+###############################################################################
+# 2) Skip if no subnets
+###############################################################################
+
 - name: Skip group if no subnets
-  when: group_subnets | length == 0
   meta: end_host
+  when: group_subnets | length == 0
 
 ###############################################################################
-# 2) Identify last subnet and next name
+# 3) Identify LAST subnet safely
 ###############################################################################
 
 - name: Identify last subnet
   set_fact:
     last_subnet: "{{ group_subnets | sort(attribute='name') | last }}"
 
-- name: Extract last subnet number
+###############################################################################
+# 4) Extract suffix NUMBER (SAFE INT CONVERSION)
+###############################################################################
+
+- name: Extract numeric suffix as INTEGER
   set_fact:
-    last_num: "{{ (last_subnet.name | regex_search('([0-9]{3})-snt$', '\\1')) | int }}"
+    last_num: >-
+      {{
+        (
+          last_subnet.name
+          | regex_search('([0-9]{3})-snt$', '\\1')
+        )
+        | int
+      }}
+
+###############################################################################
+# 5) Build next subnet name (NO STRING MATH)
+###############################################################################
 
 - name: Build next subnet name
   set_fact:
-    new_name: "{{ group_name }}-{{ '%03d' | format(last_num + 1) }}-snt"
+    next_num: "{{ '%03d' | format(last_num + 1) }}"
+    new_subnet_name: "{{ group_name }}-{{ next_num }}-snt"
 
 - debug:
-    msg: "Next subnet name will be {{ new_name }}"
+    msg: "Next subnet name will be {{ new_subnet_name }}"
 
 ###############################################################################
-# 3) Utilization logic (SAFE)
+# 6) Utilization check (placeholder)
 ###############################################################################
 
-# GCP API does NOT provide used/available counts
-# So utilization-based auto-expand is NOT possible reliably
-
-- name: Set utilization explicitly (GCP limitation)
-  set_fact:
-    util_pct: 0.0
-
-- debug:
-    msg: "Utilization for {{ last_subnet.name }} = {{ util_pct }}%"
-
-- name: Skip expansion if below threshold
-  when: util_pct < threshold
+- name: Skip creation if utilization below threshold
+  when: (last_subnet.used_ip_count | default(0)) < threshold
   meta: end_host
 
 ###############################################################################
-# 4) CIDR selection
+# 7) CIDR calculation (example logic)
 ###############################################################################
 
-- name: Extract prefix length
+- name: Derive prefix
   set_fact:
     prefix: "{{ last_subnet.ipCidrRange.split('/')[-1] | int }}"
 
-- name: Derive base /16 network
+- name: Derive base /16
   set_fact:
-    base_cidr: "{{ last_subnet.ipCidrRange.split('.')[0] }}.{{ last_subnet.ipCidrRange.split('.')[1] }}.0.0/{{ auto_base_prefix }}"
-
-- name: Generate candidate CIDRs
-  set_fact:
-    candidates: "{{ base_cidr | ipaddr('subnet', prefix) }}"
-
-- name: Collect used CIDRs
-  set_fact:
-    used_cidrs: "{{ all_subnets.resources | map(attribute='ipCidrRange') | list }}"
-
-- name: Select free CIDR
-  set_fact:
-    selected_cidr: "{{ candidates | reject('ipaddr', used_cidrs) | list | first }}"
-
-- name: Fail if no CIDR available
-  when: selected_cidr is not defined
-  fail:
-    msg: "No free CIDR available for {{ group_name }}"
+    base_cidr: >-
+      {{
+        last_subnet.ipCidrRange.split('.')[0]
+      }}.{{ last_subnet.ipCidrRange.split('.')[1] }}.0.0/16
 
 ###############################################################################
-# 5) Create subnet
+# 8) Create subnet
 ###############################################################################
 
 - name: Create new subnet
   google.cloud.gcp_compute_subnetwork:
-    name: "{{ new_name }}"
-    network: "{{ last_subnet.network }}"
-    region: "{{ last_subnet.region.split('/')[-1] }}"
-    ip_cidr_range: "{{ selected_cidr }}"
     project: "{{ gcp_project }}"
-
-- debug:
-    msg: "Subnet {{ new_name }} created with {{ selected_cidr }}"
+    region: "{{ last_subnet.region.split('/')[-1] }}"
+    network: "{{ last_subnet.network }}"
+    name: "{{ new_subnet_name }}"
+    ip_cidr_range: "{{ base_cidr | ipaddr('subnet', prefix) | difference(all_subnets.resources | map(attribute='ipCidrRange') | list) | first }}"
