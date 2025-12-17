@@ -1,39 +1,48 @@
 ---
-- name: Auto expand subnet (Python wrapper)
-  hosts: localhost
+- name: Run IPAM Python on local server
+  hosts: 192.168.116.128
   gather_facts: no
 
   vars:
-    gcp_project: network-automation-471112
+    py_script: /etc/ansible/Auto_Expand
 
   tasks:
+    - name: Verify python script exists
+      stat:
+        path: "{{ py_script }}"
+      register: py_stat
+
+    - name: Fail if python script missing
+      fail:
+        msg: "Python script not found at {{ py_script }}"
+      when: not py_stat.stat.exists
 
     - name: Run Python IPAM logic
       command: >
-        python3 expand_subnet.py {{ gcp_project }}
+        python3 {{ py_script }} {{ gcp_project }}
       register: py_out
-      changed_when: false
 
-    - name: Parse Python output
-      set_fact:
-        ipam: "{{ py_out.stdout | from_json }}"
+    - name: Show Python output
+      debug:
+        var: py_out.stdout
 
-    - name: Skip when nothing to do
-      meta: end_play
-      when: ipam.skip | default(false)
 
-    - name: Fail if Python returned error
+  tasks:
+    - name: Verify python script exists
+      stat:
+        path: "{{ py_script }}"
+      register: py_stat
+
+    - name: Fail if python script missing
       fail:
-        msg: "{{ ipam.error }}"
-      when: ipam.error is defined
+        msg: "Python script not found at {{ py_script }}"
+      when: not py_stat.stat.exists
 
-    - name: Create subnet
-      google.cloud.gcp_compute_subnetwork:
-        project: "{{ gcp_project }}"
-        name: "{{ ipam.new_name }}"
-        region: "{{ ipam.region }}"
-        network: "{{ ipam.network }}"
-        ip_cidr_range: "{{ ipam.cidr }}"
+    - name: Run Python IPAM logic
+      command: >
+        python3 {{ py_script }} {{ gcp_project }}
+      register: py_out
 
-    - debug:
-        msg: "Created subnet {{ ipam.new_name }} with {{ ipam.cidr }}"
+    - name: Show Python output
+      debug:
+        var: py_out.stdout
