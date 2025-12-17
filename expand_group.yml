@@ -1,146 +1,131 @@
 ---
-# expand_group.yml — FINAL CLEAN VERSION
+# expand_group.yml — FINAL CLEAN VERSION (AWX Compatible)
 
 ###############################################################################
-# 1) Collect subnets belonging to this group prefix
+# 1. Collect subnets for this group
 ###############################################################################
 
 - name: Collect subnets for this group
   set_fact:
     group_subnets: >-
       {{
-        all_subnets_info.resources
-        | selectattr('name', 'match', ('^' + (group_name | regex_escape) + '-[0-9]{3}-snt$'))
+        all_subnets.resources
+        | selectattr(
+            'name',
+            'search',
+            '^' + (group_name | regex_escape) + '-[0-9]{3}-snt$'
+          )
         | list
       }}
 
-- debug:
+- name: Show group subnets
+  debug:
     msg: "Group {{ group_name }} subnets: {{ group_subnets | map(attribute='name') | list }}"
 
 ###############################################################################
-# 2) Skip safely if no subnets found
+# 2. Skip if no subnets exist
 ###############################################################################
 
 - name: Skip group when no subnets found
-  when: group_subnets | length == 0
   debug:
-    msg: "Skipping {{ group_name }} — no matching subnets."
+    msg: "Skipping {{ group_name }} – no subnets found"
+  when: group_subnets | length == 0
 
 ###############################################################################
-# 3) Identify last subnet and extract numeric suffix
+# 3. Identify last subnet & next name
 ###############################################################################
 
 - name: Identify last subnet
-  when: group_subnets | length > 0
   set_fact:
     last_subnet: "{{ group_subnets | sort(attribute='name') | last }}"
-
-- name: Extract numeric suffix list
   when: group_subnets | length > 0
+
+- name: Extract numeric suffix
   set_fact:
-    last_num_list: "{{ last_subnet.name | regex_findall('-([0-9]{3})-snt$') }}"
+    last_num: "{{ (last_subnet.name | regex_search('([0-9]{3})-snt$', '\\1')) | int }}"
+  when: group_subnets | length > 0
 
-- name: Convert suffix to integer
-  when: last_num_list | length > 0
+- name: Compute next subnet name
   set_fact:
-    last_num: "{{ last_num_list[0] | int }}"
-
-###############################################################################
-# 4) Compute next subnet number (SEPARATE TASK)
-###############################################################################
-
-- name: Compute next subnet number
-  when: last_num is defined
-  set_fact:
-    new_num: "{{ '%03d' | format((last_num | int) + 1) }}"
-
-###############################################################################
-# 5) Build next subnet name (SEPARATE TASK)
-###############################################################################
-
-- name: Build next subnet name
-  when: new_num is defined
-  set_fact:
+    new_num: "{{ '%03d' | format(last_num + 1) }}"
     new_name: "{{ group_name }}-{{ new_num }}-snt"
-
-- debug:
-    when: new_name is defined
-    msg: "Next subnet name will be {{ new_name }}"
+  when: group_subnets | length > 0
 
 ###############################################################################
-# 6) Utilization check
+# 4. Utilization check (safe defaults)
 ###############################################################################
-
-- name: Extract prefix length
-  when: new_name is defined
-  set_fact:
-    prefix: "{{ last_subnet.ip_cidr_range.split('/')[-1] | int }}"
 
 - name: Calculate utilization
-  when: new_name is defined
   set_fact:
     used: "{{ last_subnet.used_ip_count | default(0) }}"
-    avail: "{{ last_subnet.available_ip_count | default(0) }}"
-    util_pct: "{{ ((used * 100) / (used + avail)) | float | round(2) if (used + avail) > 0 else 0 }}"
+    available: "{{ last_subnet.available_ip_count | default(0) }}"
+    utilization: >-
+      {{
+        ((used * 100) / (used + available))
+        if (used + available) > 0 else 0
+      }}
+  when: group_subnets | length > 0
 
-- debug:
-    when: new_name is defined
-    msg: "Utilization for {{ group_name }} = {{ util_pct }}% (threshold {{ threshold }}%)"
-
-- name: Skip expansion when below threshold
-  when: new_name is defined and util_pct < threshold
+- name: Show utilization
   debug:
-    msg: "Below threshold — no expansion required."
+    msg: "Utilization for {{ last_subnet.name }}: {{ utilization | round(2) }}%"
+  when: group_subnets | length > 0
 
 ###############################################################################
-# 7) CIDR discovery (skips manual subnets automatically)
+# 5. Stop if utilization below threshold
 ###############################################################################
 
-- name: Collect all used CIDRs in VPC
-  when: new_name is defined and util_pct >= threshold
-  set_fact:
-    vpc_cidrs: "{{ all_subnets_info.resources | map(attribute='ip_cidr_range') | list }}"
-
-- name: Derive base supernet
-  when: new_name is defined and util_pct >= threshold
-  set_fact:
-    last_ip: "{{ last_subnet.ip_cidr_range.split('/')[0] }}"
-    octets: "{{ last_ip.split('.') }}"
-    auto_base: "{{ octets[0] }}.{{ octets[1] }}.0.0/{{ auto_base_prefix }}"
-
-- name: Generate candidate CIDRs
-  when: new_name is defined and util_pct >= threshold
-  set_fact:
-    candidate_list: "{{ auto_base | ipaddr('subnet', prefix) }}"
-
-- name: Filter unused CIDRs
-  when: new_name is defined and util_pct >= threshold
-  set_fact:
-    free_candidates: "{{ candidate_list | reject('ipaddr', vpc_cidrs) | list }}"
-
-- name: Fail if no CIDR available
-  when: new_name is defined and util_pct >= threshold and free_candidates | length == 0
-  fail:
-    msg: "No free CIDR available for {{ group_name }} under {{ auto_base }}"
-
-- name: Select next free CIDR
-  when: new_name is defined and util_pct >= threshold
-  set_fact:
-    selected_cidr: "{{ free_candidates | first }}"
+- name: Skip expansion if utilization below threshold
+  debug:
+    msg: "Utilization below {{ threshold }}%, skipping expansion"
+  when:
+    - group_subnets | length > 0
+    - utilization < threshold
 
 ###############################################################################
-# 8) Create the new subnet
+# 6. CIDR selection (skip manual subnets)
+###############################################################################
+
+- name: Collect used CIDRs in VPC
+  set_fact:
+    used_cidrs: "{{ all_subnets.resources | map(attribute='ipCidrRange') | list }}"
+  when: utilization >= threshold
+
+- name: Derive base /16 automatically
+  set_fact:
+    base_cidr: >-
+      {{
+        last_subnet.ipCidrRange.split('.')[0] ~ '.' ~
+        last_subnet.ipCidrRange.split('.')[1] ~ '.0.0/' ~ auto_base_prefix
+      }}
+  when: utilization >= threshold
+
+- name: Generate candidate subnets
+  set_fact:
+    candidate_subnets: "{{ base_cidr | ipaddr('subnet', last_subnet.ipCidrRange.split('/')[-1] | int) }}"
+  when: utilization >= threshold
+
+- name: Select first free CIDR
+  set_fact:
+    selected_cidr: "{{ candidate_subnets | reject('ipaddr', used_cidrs) | first }}"
+  when: utilization >= threshold
+
+###############################################################################
+# 7. Create subnet
 ###############################################################################
 
 - name: Create new subnet
-  when: new_name is defined and util_pct >= threshold
   google.cloud.gcp_compute_subnetwork:
     name: "{{ new_name }}"
-    network: "{{ last_subnet.network }}"
-    region: "{{ last_subnet.region }}"
+    network: "{{ last_subnet.network.split('/') | last }}"
+    region: "{{ last_subnet.region.split('/') | last }}"
     ip_cidr_range: "{{ selected_cidr }}"
     project: "{{ gcp_project }}"
+  when:
+    - utilization >= threshold
+    - selected_cidr is defined
 
-- debug:
-    when: new_name is defined and util_pct >= threshold
+- name: Expansion success
+  debug:
     msg: "Created subnet {{ new_name }} with CIDR {{ selected_cidr }}"
+  when: selected_cidr is defined
