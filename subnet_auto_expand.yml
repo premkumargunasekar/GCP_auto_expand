@@ -1,0 +1,12 @@
+- name: Run IPAM engine
+  command: python3 auto_expand_ipam.py
+  register: ipam_result
+
+- name: Create subnet
+  google.cloud.gcp_compute_subnetwork:
+    name: "{{ item.base_name }}-{{ '%03d' | format(loop.index + 1) }}-snt"
+    region: "{{ item.region }}"
+    network: "{{ item.network }}"
+    ip_cidr_range: "{{ item.new_cidr }}"
+    project: "{{ gcp_project }}"
+  loop: "{{ ipam_result.stdout | from_json }}"
