@@ -1,56 +1,43 @@
 ---
-- name: Auto Expand Subnets
+- name: Auto expand subnet (Python + Ansible)
   hosts: localhost
   gather_facts: no
 
   vars:
-    threshold: 80
-    auto_base_prefix: 16
-    suffix_pattern: '-[0-9]{3}-snt$'
-
-    regions:
-      - asia-south1
-      - europe-west1
-      - asia-east1
-      - us-central1
+    gcp_project: network-automation-471112
+    group_name: ao-np-api-asia-south1
 
   tasks:
 
-    - name: Get subnets from all regions
-      google.cloud.gcp_compute_subnetwork_info:
+    - name: Run Python IPAM logic
+      command: >
+        python3 scripts/expand_subnet.py
+        {{ gcp_project }}
+        {{ group_name }}
+      register: py_out
+      changed_when: false
+
+    - name: Parse Python output
+      set_fact:
+        ipam: "{{ py_out.stdout | from_json }}"
+
+    - name: Skip when no expansion needed
+      meta: end_play
+      when: ipam.skip | default(false)
+
+    - name: Fail if Python returned error
+      fail:
+        msg: "{{ ipam.error }}"
+      when: ipam.error is defined
+
+    - name: Create new subnet
+      google.cloud.gcp_compute_subnetwork:
         project: "{{ gcp_project }}"
-        region: "{{ item }}"
-      loop: "{{ regions }}"
-      register: r
+        name: "{{ ipam.new_name }}"
+        region: "{{ ipam.region }}"
+        network: "{{ ipam.network }}"
+        ip_cidr_range: "{{ ipam.cidr }}"
 
-    - name: Flatten subnets
-      set_fact:
-        all_subnets:
-          resources: "{{ r.results | map(attribute='resources') | flatten }}"
-
-    - name: Extract names
-      set_fact:
-        all_names: "{{ all_subnets.resources | map(attribute='name') | list }}"
-
-    - name: Detect group prefixes
-      set_fact:
-        subnet_groups: >-
-          {{
-            all_names 
-            | select('search', suffix_pattern)
-            | map('regex_replace', suffix_pattern, '')
-            | unique
-            | list
-          }}
-
-    - name: Show detected groups
+    - name: Success
       debug:
-        msg: "{{ subnet_groups }}"
-
-    - name: Process each group
-      include_tasks: expand_group.yml
-      loop: "{{ subnet_groups }}"
-      loop_control:
-        loop_var: group_name
-      vars:
-        all_subnets_info: "{{ all_subnets }}"
+        msg: "Subnet {{ ipam.new_name }} created with {{ ipam.cidr }}"
