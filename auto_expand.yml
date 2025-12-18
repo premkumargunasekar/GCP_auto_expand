@@ -3,10 +3,15 @@
   hosts: 192.168.116.129
   gather_facts: no
   connection: ssh
+
   vars:
     py_script: /etc/ansible/Auto_expand/expand_subnet.py
 
+  vars_files:
+    - vars/gcp_auth.yml   # contains SA path + project
+
   tasks:
+
     - name: Verify python script exists
       stat:
         path: "{{ py_script }}"
@@ -19,28 +24,10 @@
 
     - name: Run Python IPAM logic
       command: >
-        python3 {{ py_script }} {{ gcp_project }}
-      register: py_out
-
-    - name: Show Python output
-      debug:
-        var: py_out.stdout
-
-
-  tasks:
-    - name: Verify python script exists
-      stat:
-        path: "{{ py_script }}"
-      register: py_stat
-
-    - name: Fail if python script missing
-      fail:
-        msg: "Python script not found at {{ py_script }}"
-      when: not py_stat.stat.exists
-
-    - name: Run Python IPAM logic
-      command: >
-        python3 {{ py_script }} {{ gcp_project }}
+        python3 {{ py_script }} {{ gcp_auth.project_id }}
+      environment:
+        GOOGLE_APPLICATION_CREDENTIALS: "{{ gcp_auth.sa_key_file }}"
+        CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
       register: py_out
 
     - name: Show Python output
