@@ -3,7 +3,7 @@
   hosts: 192.168.65.129
   gather_facts: no
   connection: ssh
-  become: yes
+  become: no
 
   vars:
     py_script: /etc/ansible/Auto_expand/expand_subnet.py
