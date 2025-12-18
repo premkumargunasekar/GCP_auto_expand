@@ -1,35 +1,47 @@
 ---
-- name: Run IPAM Python on local server
+- name: Auto-expand GCP subnets (production)
   hosts: 192.168.65.129
   gather_facts: no
   connection: ssh
+  become: yes
 
   vars:
     py_script: /etc/ansible/Auto_expand/expand_subnet.py
-
-  vars_files:
-    - vars/gcp_auth.yml   # contains SA path + project
+    gcp_sa_key: /etc/gcloud/sa.json
+    gcp_project: network-automation-471112
 
   tasks:
 
-    - name: Verify python script exists
+    - name: Verify service account key exists
       stat:
-        path: "{{ py_script }}"
-      register: py_stat
+        path: "{{ gcp_sa_key }}"
+      register: sa_stat
 
-    - name: Fail if python script missing
+    - name: Fail if SA key missing
       fail:
-        msg: "Python script not found at {{ py_script }}"
-      when: not py_stat.stat.exists
+        msg: "Service account key not found at {{ gcp_sa_key }}"
+      when: not sa_stat.stat.exists
 
-    - name: Run Python IPAM logic
+    - name: Activate GCP service account (non-interactive)
       command: >
-        python3 {{ py_script }} {{ gcp_auth.project_id }}
+        gcloud auth activate-service-account
+        --key-file={{ gcp_sa_key }}
       environment:
-        GOOGLE_APPLICATION_CREDENTIALS: "{{ gcp_auth.sa_key_file }}"
+        CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
+
+    - name: Set GCP project
+      command: >
+        gcloud config set project {{ gcp_project }}
+      environment:
+        CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
+
+    - name: Run IPAM auto-expand logic
+      command: >
+        python3 {{ py_script }} {{ gcp_project }}
+      environment:
         CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
       register: py_out
 
-    - name: Show Python output
+    - name: Show result
       debug:
         var: py_out.stdout
