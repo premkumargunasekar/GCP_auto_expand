@@ -1,0 +1,3 @@
+gcp_auth:
+  sa_key_file: /etc/gcloud/sa.json
+  project_id: network-automation-471112
