@@ -3,7 +3,7 @@
   gather_facts: no
 
   vars:
-    gcp_sa_key: /etc/gcloud/sa.json
+    gcp_sa_key: /etc/ansible/gcloud
 
   tasks:
     - name: Activate GCP service account
