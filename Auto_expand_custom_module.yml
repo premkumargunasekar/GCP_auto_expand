@@ -1,0 +1,13 @@
+- name: Auto-expand GCP subnet (custom module)
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+    - name: Run GCP auto expand
+      gcp_auto_expand:
+        project: "{{ gcp_project }}"
+      register: expand_out
+
+    - name: Show result
+      debug:
+        var: expand_out
