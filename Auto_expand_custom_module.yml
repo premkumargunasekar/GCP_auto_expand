@@ -1,5 +1,5 @@
 - name: Auto-expand GCP subnet (custom module)
-  hosts: localhost
+  hosts: 192.168.20.129
   gather_facts: no
 
   tasks:
