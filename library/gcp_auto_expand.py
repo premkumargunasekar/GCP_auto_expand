@@ -10,21 +10,7 @@ UTIL_THRESHOLD = 80
 BASE_PREFIX = 16
 
 
-def ensure_adc():
-    """
-    Force gcloud to bind to Application Default Credentials (AWX)
-    """
-    subprocess.run(
-        "gcloud auth application-default print-access-token --quiet",
-        shell=True,
-        check=True
-    )
-
-
 def gcloud(cmd):
-    """
-    Run gcloud command using ADC
-    """
     full_cmd = f"gcloud --quiet {cmd}"
     result = subprocess.run(
         full_cmd, shell=True, capture_output=True, text=True
@@ -47,10 +33,7 @@ def run_module():
     project = module.params['project']
 
     try:
-        # 🔑 VERY IMPORTANT (AWX ADC BINDING)
-        ensure_adc()
-
-        # 1. List subnets
+        # 1. List subnets (gcloud already authenticated via jump host)
         subnets = gcloud(
             f"compute networks subnets list "
             f"--project {project} --format=json"
