@@ -1,5 +1,5 @@
 - name: Auto-expand GCP subnet 
-  hosts: csv_server
+  hosts: 192.168.20.129
   gather_facts: no
 
   vars:
