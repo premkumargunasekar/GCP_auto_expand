@@ -1,13 +1,21 @@
-- name: Auto-expand GCP subnet (custom module)
-  hosts: localhost
-  connection: local
+- name: Auto-expand GCP subnet 
+  hosts: csv_server
   gather_facts: no
 
+  vars:
+    gcp_sa_key: /etc/gcloud/sa.json
+
   tasks:
-    - name: Authenticate gcloud using AWX-injected SA
+    - name: Activate GCP service account
       command: >
         gcloud auth activate-service-account
-        --key-file={{ lookup('env','GOOGLE_APPLICATION_CREDENTIALS') }}
+        --key-file={{ gcp_sa_key }}
+      environment:
+        CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
+
+    - name: Set GCP project
+      command: >
+        gcloud config set project {{ gcp_project }}
       environment:
         CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
 
@@ -16,5 +24,6 @@
         project: "{{ gcp_project }}"
       register: expand_out
 
-    - debug:
+    - name: Show result
+      debug:
         var: expand_out
