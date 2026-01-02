@@ -1,5 +1,6 @@
 - name: Auto-expand GCP subnet (custom module)
-  hosts: 192.168.20.129
+  hosts: localhost
+  connection: local
   gather_facts: no
 
   tasks:
@@ -9,12 +10,11 @@
         --key-file={{ lookup('env','GOOGLE_APPLICATION_CREDENTIALS') }}
       environment:
         CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
-        
+
     - name: Run GCP auto expand
       gcp_auto_expand:
         project: "{{ gcp_project }}"
       register: expand_out
 
-    - name: Show result
-      debug:
+    - debug:
         var: expand_out
