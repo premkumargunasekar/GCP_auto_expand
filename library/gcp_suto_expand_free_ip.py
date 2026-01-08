@@ -22,10 +22,34 @@ def gcloud(cmd):
     return json.loads(result.stdout) if result.stdout else []
 
 
-def count_used_ips(subnet_selflink, region, project):
+def google_reserved_ips(total_ips):
+    """
+    Console-aligned approximation of Google internal IP reservations.
+    These are NOT exposed via any API.
+    """
+    if total_ips <= 32:       # /29 – /27
+        return 4
+    elif total_ips <= 64:     # /26
+        return 4
+    elif total_ips <= 128:    # /25
+        return 5
+    elif total_ips <= 256:    # /24
+        return 6
+    elif total_ips <= 512:    # /23
+        return 8
+    elif total_ips <= 1024:   # /22
+        return 10
+    else:
+        return int(total_ips * 0.03)  # safe upper bound
+
+
+def count_api_used_ips(subnet_selflink, region, project):
+    """
+    Count API-visible IP usage only.
+    """
     used = set()
 
-    # 1️⃣ Count VM NIC IPs (reliable method)
+    # VM NIC IPs
     vms = gcloud(
         f"compute instances list --project {project} --format=json"
     )
@@ -35,7 +59,7 @@ def count_used_ips(subnet_selflink, region, project):
             if nic.get("subnetwork") == subnet_selflink:
                 used.add(nic.get("networkIP"))
 
-    # 2️⃣ Count reserved internal addresses
+    # Reserved internal IPs
     addrs = gcloud(
         f"compute addresses list "
         f"--regions {region} "
@@ -47,7 +71,7 @@ def count_used_ips(subnet_selflink, region, project):
         if addr.get("subnetwork") == subnet_selflink:
             used.add(addr.get("address"))
 
-    # 3️⃣ Gateway IP (always reserved)
+    # Gateway IP
     return len(used) + 1
 
 
@@ -69,7 +93,6 @@ def run_module():
             f"--project {project} --format=json"
         )
 
-        # Group subnets by chain name
         pattern = re.compile(r"^(.*)-(\d{3})-snt$")
         groups = {}
 
@@ -92,15 +115,18 @@ def run_module():
             cidr = ipaddress.ip_network(latest["ipCidrRange"])
             total_ips = cidr.num_addresses
 
-            used_ips = count_used_ips(
+            api_used = count_api_used_ips(
                 latest["selfLink"],
                 latest["region"].split("/")[-1],
                 project
             )
 
-            free_ips = total_ips - used_ips
+            google_reserved = google_reserved_ips(total_ips)
 
-            # 🔑 FREE-IP-BASED RESERVE
+            used_ips = api_used + google_reserved
+            free_ips = max(total_ips - used_ips, 0)
+
+            # Free-IP reserve (IPAM-safe)
             reserve_ips = max(2, int(total_ips * 0.06))
 
             if free_ips > reserve_ips:
@@ -108,6 +134,8 @@ def run_module():
                     "group": group,
                     "subnet": latest["name"],
                     "total_ips": total_ips,
+                    "api_used_ips": api_used,
+                    "google_reserved_ips": google_reserved,
                     "used_ips": used_ips,
                     "free_ips": free_ips,
                     "reserve_ips": reserve_ips,
@@ -161,6 +189,8 @@ def run_module():
                 "new_subnet": new_name,
                 "cidr": str(candidate),
                 "total_ips": total_ips,
+                "api_used_ips": api_used,
+                "google_reserved_ips": google_reserved,
                 "used_ips": used_ips,
                 "free_ips": free_ips,
                 "reserve_ips": reserve_ips,
