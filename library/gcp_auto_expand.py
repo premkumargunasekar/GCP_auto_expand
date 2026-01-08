@@ -6,8 +6,8 @@ import re
 import ipaddress
 import subprocess
 
-UTIL_THRESHOLD = 30
-BASE_PREFIX = 16
+UTIL_THRESHOLD = 30        # % threshold
+BASE_PREFIX = 16           # Base pool prefix
 
 
 def gcloud(cmd):
@@ -17,9 +17,34 @@ def gcloud(cmd):
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip())
-    if result.stdout:
-        return json.loads(result.stdout)
-    return {}
+    return json.loads(result.stdout) if result.stdout else []
+
+
+def count_used_ips(subnet_name, region, project):
+    # VM NIC IPs
+    vm_cmd = (
+        f"compute instances list "
+        f"--filter=\"networkInterfaces.subnetwork:({subnet_name})\" "
+        f"--project {project} --format=json"
+    )
+    vms = gcloud(vm_cmd)
+
+    vm_ips = []
+    for vm in vms:
+        for nic in vm.get("networkInterfaces", []):
+            if subnet_name in nic.get("subnetwork", ""):
+                vm_ips.append(nic.get("networkIP"))
+
+    # Reserved internal IPs
+    addr_cmd = (
+        f"compute addresses list "
+        f"--filter=\"subnetwork:({subnet_name})\" "
+        f"--regions {region} "
+        f"--project {project} --format=json"
+    )
+    addrs = gcloud(addr_cmd)
+
+    return len(vm_ips) + len(addrs)
 
 
 def run_module():
@@ -37,7 +62,6 @@ def run_module():
     dry_run = module.params['dry_run']
 
     try:
-        # 1. List all subnets
         subnets = gcloud(
             f"compute networks subnets list "
             f"--project {project} --format=json"
@@ -47,39 +71,26 @@ def run_module():
         groups = {}
 
         for s in subnets:
-            name = s.get("name", "")
-            m = pattern.match(name)
+            m = pattern.match(s.get("name", ""))
             if not m:
                 continue
-
-            group = m.group(1)
-            index = int(m.group(2))
-            groups.setdefault(group, []).append({
-                "index": index,
+            groups.setdefault(m.group(1), []).append({
+                "index": int(m.group(2)),
                 "subnet": s
             })
-
-        if not groups:
-            module.exit_json(
-                changed=False,
-                results=[],
-                reason="No expandable subnet chains found"
-            )
 
         results = []
         changed_any = False
 
-        # 2. Process ALL subnet chains
         for group_name in sorted(groups.keys()):
             chain = sorted(groups[group_name], key=lambda x: x["index"])
             latest = chain[-1]["subnet"]
             latest_index = chain[-1]["index"]
 
-            region = latest["region"].split("/")[-1]
             subnet_name = latest["name"]
-            network_name = latest["network"].split("/")[-1]
+            region = latest["region"].split("/")[-1]
+            network = latest["network"].split("/")[-1]
 
-            # Describe subnet
             details = gcloud(
                 f"compute networks subnets describe {subnet_name} "
                 f"--region {region} --project {project} --format=json"
@@ -87,7 +98,7 @@ def run_module():
 
             cidr = ipaddress.ip_network(details["ipCidrRange"])
             total_ips = cidr.num_addresses
-            used_ips = int(details.get("usedIps", 0))
+            used_ips = count_used_ips(subnet_name, region, project)
             utilization = round((used_ips / total_ips) * 100, 2)
 
             if utilization < UTIL_THRESHOLD:
@@ -99,11 +110,9 @@ def run_module():
                 })
                 continue
 
-            # Find used CIDRs in same VPC
             used_cidrs = [
                 ipaddress.ip_network(s["ipCidrRange"])
-                for s in subnets
-                if s["network"] == latest["network"]
+                for s in subnets if s["network"] == latest["network"]
             ]
 
             octets = cidr.network_address.exploded.split(".")
@@ -111,11 +120,11 @@ def run_module():
                 f"{octets[0]}.{octets[1]}.0.0/{BASE_PREFIX}"
             )
 
-            candidate = None
-            for sn in base_net.subnets(new_prefix=cidr.prefixlen):
-                if sn not in used_cidrs:
-                    candidate = sn
-                    break
+            candidate = next(
+                (sn for sn in base_net.subnets(new_prefix=cidr.prefixlen)
+                 if sn not in used_cidrs),
+                None
+            )
 
             if not candidate:
                 results.append({
@@ -123,14 +132,12 @@ def run_module():
                     "subnet": subnet_name,
                     "utilization": utilization,
                     "action": "failed",
-                    "reason": "No free CIDR available"
+                    "reason": "No free CIDR"
                 })
                 continue
 
-            new_index = f"{latest_index + 1:03d}"
-            new_name = f"{group_name}-{new_index}-snt"
+            new_name = f"{group_name}-{latest_index + 1:03d}-snt"
 
-            # Idempotency check
             if new_name in [s["name"] for s in subnets]:
                 results.append({
                     "group": group_name,
@@ -140,11 +147,10 @@ def run_module():
                 })
                 continue
 
-            # 3. CREATE subnet (unless dry-run)
             if not dry_run:
                 create_cmd = (
                     f"compute networks subnets create {new_name} "
-                    f"--network {network_name} "
+                    f"--network {network} "
                     f"--range {candidate} "
                     f"--region {region} "
                     f"--project {project}"
@@ -161,7 +167,7 @@ def run_module():
                 "new_subnet": new_name,
                 "cidr": str(candidate),
                 "region": region,
-                "network": network_name,
+                "network": network,
                 "utilization": utilization,
                 "action": "created" if not dry_run else "dry-run"
             })
@@ -185,5 +191,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
