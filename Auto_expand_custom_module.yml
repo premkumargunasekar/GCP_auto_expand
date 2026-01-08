@@ -7,5 +7,5 @@
 
   tasks:
     - name: Run GCP auto expand
-      gcp_auto_expand:
+      gcp_suto_expand_free_ip:
         project: "{{ gcp_project }}"
