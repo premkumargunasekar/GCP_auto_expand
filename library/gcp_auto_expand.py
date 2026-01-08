@@ -6,7 +6,7 @@ import re
 import ipaddress
 import subprocess
 
-UTIL_THRESHOLD = 49
+UTIL_THRESHOLD = 10
 BASE_PREFIX = 16
 
 
@@ -185,3 +185,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
