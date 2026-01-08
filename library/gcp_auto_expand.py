@@ -6,7 +6,7 @@ import re
 import ipaddress
 import subprocess
 
-UTIL_THRESHOLD = 30        # % threshold
+UTIL_THRESHOLD = 70        # % threshold
 BASE_PREFIX = 16           # Base pool prefix
 
 
@@ -191,3 +191,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
