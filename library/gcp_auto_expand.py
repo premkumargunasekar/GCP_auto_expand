@@ -17,12 +17,15 @@ def gcloud(cmd):
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip())
-    return json.loads(result.stdout)
+    if result.stdout:
+        return json.loads(result.stdout)
+    return {}
 
 
 def run_module():
     module_args = dict(
         project=dict(type='str', required=True),
+        dry_run=dict(type='bool', default=False)
     )
 
     module = AnsibleModule(
@@ -31,9 +34,10 @@ def run_module():
     )
 
     project = module.params['project']
+    dry_run = module.params['dry_run']
 
     try:
-        # 1. List subnets (gcloud already authenticated via jump host)
+        # 1. List all subnets
         subnets = gcloud(
             f"compute networks subnets list "
             f"--project {project} --format=json"
@@ -58,73 +62,117 @@ def run_module():
         if not groups:
             module.exit_json(
                 changed=False,
-                skip=True,
+                results=[],
                 reason="No expandable subnet chains found"
             )
 
-        # Pick ONE chain (deterministic)
-        group_name = sorted(groups.keys())[0]
-        chain = sorted(groups[group_name], key=lambda x: x["index"])
-        latest = chain[-1]["subnet"]
-        latest_index = chain[-1]["index"]
+        results = []
+        changed_any = False
 
-        region = latest["region"].split("/")[-1]
-        subnet_name = latest["name"]
+        # 2. Process ALL subnet chains
+        for group_name in sorted(groups.keys()):
+            chain = sorted(groups[group_name], key=lambda x: x["index"])
+            latest = chain[-1]["subnet"]
+            latest_index = chain[-1]["index"]
 
-        # 2. Describe latest subnet
-        details = gcloud(
-            f"compute networks subnets describe {subnet_name} "
-            f"--region {region} --project {project} --format=json"
-        )
+            region = latest["region"].split("/")[-1]
+            subnet_name = latest["name"]
+            network_name = latest["network"].split("/")[-1]
 
-        cidr = ipaddress.ip_network(details["ipCidrRange"])
-        total_ips = cidr.num_addresses
-        used_ips = int(details.get("usedIps", 0))
-        utilization = round((used_ips / total_ips) * 100, 2)
-
-        if utilization < UTIL_THRESHOLD:
-            module.exit_json(
-                changed=False,
-                skip=True,
-                subnet=subnet_name,
-                utilization=utilization,
-                reason="Utilization below threshold"
+            # Describe subnet
+            details = gcloud(
+                f"compute networks subnets describe {subnet_name} "
+                f"--region {region} --project {project} --format=json"
             )
 
-        # 3. Find next free CIDR
-        used_cidrs = [
-            ipaddress.ip_network(s["ipCidrRange"])
-            for s in subnets
-            if s["network"] == latest["network"]
-        ]
+            cidr = ipaddress.ip_network(details["ipCidrRange"])
+            total_ips = cidr.num_addresses
+            used_ips = int(details.get("usedIps", 0))
+            utilization = round((used_ips / total_ips) * 100, 2)
 
-        octets = cidr.network_address.exploded.split(".")
-        base_net = ipaddress.ip_network(
-            f"{octets[0]}.{octets[1]}.0.0/{BASE_PREFIX}"
-        )
+            if utilization < UTIL_THRESHOLD:
+                results.append({
+                    "group": group_name,
+                    "subnet": subnet_name,
+                    "utilization": utilization,
+                    "action": "skipped"
+                })
+                continue
 
-        candidate = None
-        for sn in base_net.subnets(new_prefix=cidr.prefixlen):
-            if sn not in used_cidrs:
-                candidate = sn
-                break
+            # Find used CIDRs in same VPC
+            used_cidrs = [
+                ipaddress.ip_network(s["ipCidrRange"])
+                for s in subnets
+                if s["network"] == latest["network"]
+            ]
 
-        if not candidate:
-            module.fail_json(msg="No free CIDR available in base pool")
+            octets = cidr.network_address.exploded.split(".")
+            base_net = ipaddress.ip_network(
+                f"{octets[0]}.{octets[1]}.0.0/{BASE_PREFIX}"
+            )
 
-        new_index = f"{latest_index + 1:03d}"
-        new_name = f"{group_name}-{new_index}-snt"
+            candidate = None
+            for sn in base_net.subnets(new_prefix=cidr.prefixlen):
+                if sn not in used_cidrs:
+                    candidate = sn
+                    break
+
+            if not candidate:
+                results.append({
+                    "group": group_name,
+                    "subnet": subnet_name,
+                    "utilization": utilization,
+                    "action": "failed",
+                    "reason": "No free CIDR available"
+                })
+                continue
+
+            new_index = f"{latest_index + 1:03d}"
+            new_name = f"{group_name}-{new_index}-snt"
+
+            # Idempotency check
+            if new_name in [s["name"] for s in subnets]:
+                results.append({
+                    "group": group_name,
+                    "subnet": subnet_name,
+                    "new_subnet": new_name,
+                    "action": "already_exists"
+                })
+                continue
+
+            # 3. CREATE subnet (unless dry-run)
+            if not dry_run:
+                create_cmd = (
+                    f"compute networks subnets create {new_name} "
+                    f"--network {network_name} "
+                    f"--range {candidate} "
+                    f"--region {region} "
+                    f"--project {project}"
+                )
+                subprocess.run(
+                    f"gcloud --quiet {create_cmd}",
+                    shell=True,
+                    check=True
+                )
+
+            results.append({
+                "group": group_name,
+                "current_subnet": subnet_name,
+                "new_subnet": new_name,
+                "cidr": str(candidate),
+                "region": region,
+                "network": network_name,
+                "utilization": utilization,
+                "action": "created" if not dry_run else "dry-run"
+            })
+
+            changed_any = True
 
         module.exit_json(
-            changed=True,
-            action="expand",
-            group=group_name,
-            current_subnet=subnet_name,
-            utilization=utilization,
-            new_subnet=new_name,
-            cidr=str(candidate),
-            region=region,
-            network=latest["network"].split("/")[-1]
+            changed=changed_any,
+            threshold=UTIL_THRESHOLD,
+            dry_run=dry_run,
+            results=results
         )
 
     except Exception as e:
@@ -137,4 +185,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
