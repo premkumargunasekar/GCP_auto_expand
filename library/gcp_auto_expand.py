@@ -6,7 +6,7 @@ import re
 import ipaddress
 import subprocess
 
-UTIL_THRESHOLD = 24        # % threshold
+UTIL_THRESHOLD = 50        # % threshold
 BASE_PREFIX = 16           # Base pool prefix
 
 
@@ -18,6 +18,27 @@ def gcloud(cmd):
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip())
     return json.loads(result.stdout) if result.stdout else []
+
+
+def google_reserved_ips(total_ips):
+    """
+    Console-aligned approximation of Google system-reserved IPs
+    (not exposed via any API)
+    """
+    if total_ips <= 32:        # /29 – /27
+        return 4
+    elif total_ips <= 64:      # /26
+        return 4
+    elif total_ips <= 128:     # /25
+        return 5
+    elif total_ips <= 256:     # /24
+        return 6
+    elif total_ips <= 512:     # /23
+        return 8
+    elif total_ips <= 1024:    # /22
+        return 10
+    else:
+        return int(total_ips * 0.03)
 
 
 def count_used_ips(subnet_name, region, project):
@@ -98,13 +119,22 @@ def run_module():
 
             cidr = ipaddress.ip_network(details["ipCidrRange"])
             total_ips = cidr.num_addresses
-            used_ips = count_used_ips(subnet_name, region, project)
+
+            api_used_ips = count_used_ips(subnet_name, region, project)
+            reserved_google = google_reserved_ips(total_ips)
+
+            # +1 for gateway IP
+            used_ips = api_used_ips + reserved_google + 1
+
             utilization = round((used_ips / total_ips) * 100, 2)
 
             if utilization < UTIL_THRESHOLD:
                 results.append({
                     "group": group_name,
                     "subnet": subnet_name,
+                    "api_used_ips": api_used_ips,
+                    "google_reserved_ips": reserved_google,
+                    "used_ips": used_ips,
                     "utilization": utilization,
                     "action": "skipped"
                 })
@@ -137,15 +167,6 @@ def run_module():
                 continue
 
             new_name = f"{group_name}-{latest_index + 1:03d}-snt"
-
-            if new_name in [s["name"] for s in subnets]:
-                results.append({
-                    "group": group_name,
-                    "subnet": subnet_name,
-                    "new_subnet": new_name,
-                    "action": "already_exists"
-                })
-                continue
 
             if not dry_run:
                 create_cmd = (
@@ -191,5 +212,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
