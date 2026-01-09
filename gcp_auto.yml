@@ -1,0 +1,20 @@
+---
+- name: Auto-expand GCP subnet (jump host)
+  hosts: 192.168.20.129
+  gather_facts: false
+  become: false
+
+  vars:
+    gcp_project: "network-automation-471112"
+    dry_run: false
+
+  tasks:
+    - name: Run GCP auto expand (series-based CIDR)
+      gcp_auto_expand:
+        project: "{{ gcp_project }}"
+        dry_run: "{{ dry_run }}"
+      register: expand_result
+
+    - name: Show expansion result
+      debug:
+        var: expand_result
