@@ -10,7 +10,7 @@
 
   tasks:
     - name: Run GCP auto expand (series-based CIDR)
-      gcp_auto_expand:
+      gcp_auto:
         project: "{{ gcp_project }}"
         dry_run: "{{ dry_run }}"
       register: expand_result
