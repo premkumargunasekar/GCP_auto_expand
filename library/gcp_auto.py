@@ -6,7 +6,7 @@ import re
 import ipaddress
 import subprocess
 
-UTIL_THRESHOLD = 18  # percent
+UTIL_THRESHOLD = 15  # percent
 
 
 def gcloud(cmd):
