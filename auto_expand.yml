@@ -7,8 +7,8 @@
 
   vars:
     py_script: /etc/ansible/Auto_expand/expand_subnet.py
-    gcp_sa_key: /etc/gcloud/sa.json
-    gcp_project: network-automation-471112
+    gcp_sa_key: /etc/ansible/GCP_Auth/gp-lab.json
+    gcp_project: gp-lab-490903
 
   tasks:
 
